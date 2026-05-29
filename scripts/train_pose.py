@@ -23,10 +23,12 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.utils.data import DataLoader
 
 from motionbricks.data.synthetic_dataset import SyntheticMotionDataset, collate_batch
+from motionbricks.data.motion_feature_dataset import MotionFeatureDataset
 from motionbricks.helper.pl_util import load_motion_rep
+from train_common import load_matching_checkpoint, load_training_config, make_loggers_and_callbacks, make_trainer
 
 
-def load_config(result_dir: str, max_steps: int):
+def load_config(result_dir: str, train_conf: DictConfig):
     """Load and patch hparams.yaml for single-GPU training."""
     version_dir = os.path.join(result_dir, "motionbricks_pose", "version_1")
     hparams_path = os.path.join(version_dir, "hparams.yaml")
@@ -39,18 +41,22 @@ def load_config(result_dir: str, max_steps: int):
         conf.motion_rep.stats.folder = os.path.join(version_dir, "stats", "motion")
 
         # single-GPU training overrides
-        conf.trainer.devices = 1
-        conf.trainer.num_nodes = 1
-        conf.trainer.max_steps = max_steps
-        conf.trainer.accelerator = "auto"
-        conf.trainer.strategy = "auto"
-        conf.trainer.enable_progress_bar = True
-        conf.trainer.log_every_n_steps = 10
-        conf.trainer.val_check_interval = max_steps
+        conf.trainer.devices = train_conf.trainer.devices
+        conf.trainer.num_nodes = train_conf.trainer.num_nodes
+        conf.trainer.max_steps = train_conf.max_steps
+        conf.trainer.accelerator = train_conf.trainer.accelerator
+        conf.trainer.strategy = train_conf.trainer.strategy
+        conf.trainer.enable_progress_bar = train_conf.trainer.enable_progress_bar
+        conf.trainer.log_every_n_steps = train_conf.trainer.log_every_n_steps
+        conf.trainer.val_check_interval = train_conf.trainer.val_check_interval
         conf.trainer.num_sanity_val_steps = 0
 
         # resolve ${trainer.max_steps} in scheduler
-        conf.model.scheduler.num_training_steps = max_steps
+        conf.model.scheduler.num_training_steps = train_conf.max_steps
+        if train_conf.min_tokens is not None:
+            conf.model.args.min_tokens = train_conf.min_tokens
+        if train_conf.max_tokens is not None:
+            conf.model.args.max_tokens = train_conf.max_tokens
 
         # remove keys with unresolvable ${hydra:...} interpolations
         conf.id = "synthetic"
@@ -66,38 +72,98 @@ def load_config(result_dir: str, max_steps: int):
 
 def main():
     parser = argparse.ArgumentParser(description="Pose model training")
-    parser.add_argument("--result_dir", type=str, default="./out",
+    parser.add_argument("--config", type=str, default=None,
+                        help="YAML file with training parameters")
+    parser.add_argument("--result_dir", type=str, default=None,
                         help="Directory containing pretrained checkpoints")
-    parser.add_argument("--max_steps", type=int, default=200,
+    parser.add_argument("--max_steps", type=int, default=None,
                         help="Number of training steps")
-    parser.add_argument("--batch_size", type=int, default=8,
+    parser.add_argument("--batch_size", type=int, default=None,
                         help="Batch size")
-    parser.add_argument("--num_samples", type=int, default=500,
+    parser.add_argument("--num_workers", type=int, default=None)
+    parser.add_argument("--num_samples", type=int, default=None,
                         help="Number of synthetic samples in dataset")
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--dataset", type=str, default=None,
+                        help="Precomputed MotionBricks motion feature dataset .pt")
+    parser.add_argument("--min_tokens", type=int, default=None)
+    parser.add_argument("--max_tokens", type=int, default=None)
+    parser.add_argument("--log_dir", type=str, default=None)
+    parser.add_argument("--run_name", type=str, default=None)
+    parser.add_argument("--devices", type=int, default=None)
+    parser.add_argument("--num_nodes", type=int, default=None)
+    parser.add_argument("--accelerator", type=str, default=None)
+    parser.add_argument("--strategy", type=str, default=None)
+    parser.add_argument("--wandb", type=int, default=None, help="1 enables wandb, 0 disables it")
+    parser.add_argument("--wandb_project", type=str, default=None)
+    parser.add_argument("--wandb_offline", type=int, default=None)
+    parser.add_argument("--checkpoint_every", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
-    pl.seed_everything(args.seed)
-    conf, version_dir = load_config(args.result_dir, args.max_steps)
+    if not torch.cuda.is_available():
+        original_torch_load = torch.load
+
+        def torch_load_cpu(*load_args, **load_kwargs):
+            load_kwargs.setdefault("map_location", "cpu")
+            return original_torch_load(*load_args, **load_kwargs)
+
+        torch.load = torch_load_cpu
+
+    cli_overrides = {
+        "result_dir": args.result_dir,
+        "dataset": args.dataset,
+        "max_steps": args.max_steps,
+        "batch_size": args.batch_size,
+        "num_workers": args.num_workers,
+        "num_samples": args.num_samples,
+        "min_tokens": args.min_tokens,
+        "max_tokens": args.max_tokens,
+        "log_dir": args.log_dir,
+        "run_name": args.run_name,
+        "seed": args.seed,
+    }
+    train_conf = load_training_config(args.config, cli_overrides, "pose")
+    if args.devices is not None:
+        train_conf.trainer.devices = args.devices
+    if args.num_nodes is not None:
+        train_conf.trainer.num_nodes = args.num_nodes
+    if args.accelerator is not None:
+        train_conf.trainer.accelerator = args.accelerator
+    if args.strategy is not None:
+        train_conf.trainer.strategy = args.strategy
+    if args.wandb is not None:
+        train_conf.wandb.enabled = bool(args.wandb)
+    if args.wandb_project is not None:
+        train_conf.wandb.project = args.wandb_project
+    if args.wandb_offline is not None:
+        train_conf.wandb.offline = bool(args.wandb_offline)
+    if args.checkpoint_every is not None:
+        train_conf.checkpoint.every_n_train_steps = args.checkpoint_every
+
+    pl.seed_everything(train_conf.seed)
+    conf, version_dir = load_config(train_conf.result_dir, train_conf)
 
     # instantiate skeleton and motion representation
     motion_rep = load_motion_rep(conf)
     feat_dim = len(motion_rep.indices['all'])
 
-    # create synthetic dataset
-    dataset = SyntheticMotionDataset(
-        feat_dim=feat_dim,
-        num_samples=args.num_samples,
-        min_frames=80,
-        max_frames=200,
-    )
+    if train_conf.dataset:
+        min_frames = conf.model.args.min_tokens * (2 ** conf.model.args.down_t) + 1
+        dataset = MotionFeatureDataset(train_conf.dataset, min_frames=min_frames)
+    else:
+        dataset = SyntheticMotionDataset(
+            feat_dim=feat_dim,
+            num_samples=train_conf.num_samples,
+            min_frames=80,
+            max_frames=200,
+        )
     dataloader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
+        batch_size=train_conf.batch_size,
         shuffle=True,
-        num_workers=2,
+        num_workers=train_conf.num_workers,
         collate_fn=collate_batch,
-        persistent_workers=True,
+        persistent_workers=train_conf.num_workers > 0,
     )
 
     # instantiate networks and model
@@ -131,26 +197,20 @@ def main():
             _recursive_=False,
         )
 
-    # create trainer (no callbacks)
-    trainer = pl.Trainer(
-        max_steps=conf.trainer.max_steps,
-        devices=conf.trainer.devices,
-        num_nodes=conf.trainer.num_nodes,
-        accelerator=conf.trainer.accelerator,
-        strategy=conf.trainer.strategy,
-        precision=conf.trainer.precision,
-        gradient_clip_val=conf.trainer.gradient_clip_val,
-        enable_progress_bar=conf.trainer.enable_progress_bar,
-        log_every_n_steps=conf.trainer.log_every_n_steps,
-        num_sanity_val_steps=0,
-        enable_checkpointing=False,
-        logger=False,
-    )
+    if train_conf.init_from_checkpoint.enabled:
+        init_ckpt = train_conf.init_from_checkpoint.path
+        if init_ckpt is None:
+            init_ckpt = os.path.join(version_dir, "checkpoints", "model-step=2000000.ckpt")
+        load_matching_checkpoint(model, init_ckpt, strict=bool(train_conf.init_from_checkpoint.strict))
 
-    print(f"Starting pose model training for {args.max_steps} steps...")
+    logger, callbacks, run_dir = make_loggers_and_callbacks(train_conf, conf, "pose")
+    trainer = make_trainer(train_conf, conf, logger, callbacks)
+
+    print(f"Starting pose model training for {train_conf.max_steps} steps...")
+    print(f"  Run dir: {run_dir}")
     print(f"  Feature dim: {feat_dim}")
-    print(f"  Batch size: {args.batch_size}")
-    print(f"  Dataset size: {args.num_samples}")
+    print(f"  Batch size: {train_conf.batch_size}")
+    print(f"  Dataset size: {len(dataset)}")
     print(f"  VQVAE loaded: {model.vqvae_model_loaded}")
     trainer.fit(model, train_dataloaders=dataloader)
     print("Training complete.")

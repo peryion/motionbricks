@@ -38,3 +38,12 @@ Thumbs.db
 out/
 assets/
 data/
+!motionbricks/data/
+motionbricks/data/*
+!motionbricks/data/motion_feature_dataset.py
+
+motionbricks/motion_backbone/models/__pycache__
+
+.codex/
+.claude/
+datasets/
