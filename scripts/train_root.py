@@ -24,7 +24,13 @@ from torch.utils.data import DataLoader
 from motionbricks.data.synthetic_dataset import SyntheticMotionDataset, collate_batch
 from motionbricks.data.motion_feature_dataset import MotionFeatureDataset
 from motionbricks.helper.pl_util import load_motion_rep
-from train_common import load_matching_checkpoint, load_training_config, make_loggers_and_callbacks, make_trainer
+from train_common import (
+    configure_cuda_process,
+    load_matching_checkpoint,
+    load_training_config,
+    make_loggers_and_callbacks,
+    make_trainer,
+)
 
 
 def load_config(result_dir: str, train_conf: DictConfig):
@@ -130,6 +136,7 @@ def main():
     if args.checkpoint_every is not None:
         train_conf.checkpoint.every_n_train_steps = args.checkpoint_every
 
+    configure_cuda_process(train_conf)
     pl.seed_everything(train_conf.seed)
     conf, version_dir = load_config(train_conf.result_dir, train_conf)
 

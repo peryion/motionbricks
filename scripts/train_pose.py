@@ -25,7 +25,14 @@ from torch.utils.data import DataLoader
 from motionbricks.data.synthetic_dataset import SyntheticMotionDataset, collate_batch
 from motionbricks.data.motion_feature_dataset import MotionFeatureDataset
 from motionbricks.helper.pl_util import load_motion_rep
-from train_common import load_matching_checkpoint, load_training_config, make_loggers_and_callbacks, make_trainer
+from train_common import (
+    configure_cuda_process,
+    load_matching_checkpoint,
+    load_training_config,
+    make_loggers_and_callbacks,
+    make_trainer,
+    patch_torch_load_map_location_cpu,
+)
 
 
 def load_config(result_dir: str, train_conf: DictConfig):
@@ -100,15 +107,6 @@ def main():
     parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
-    if not torch.cuda.is_available():
-        original_torch_load = torch.load
-
-        def torch_load_cpu(*load_args, **load_kwargs):
-            load_kwargs.setdefault("map_location", "cpu")
-            return original_torch_load(*load_args, **load_kwargs)
-
-        torch.load = torch_load_cpu
-
     cli_overrides = {
         "result_dir": args.result_dir,
         "dataset": args.dataset,
@@ -140,6 +138,8 @@ def main():
     if args.checkpoint_every is not None:
         train_conf.checkpoint.every_n_train_steps = args.checkpoint_every
 
+    configure_cuda_process(train_conf)
+    patch_torch_load_map_location_cpu()
     pl.seed_everything(train_conf.seed)
     conf, version_dir = load_config(train_conf.result_dir, train_conf)
 

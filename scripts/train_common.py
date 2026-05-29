@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import os
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +145,27 @@ def make_trainer(train_conf: DictConfig, model_conf: DictConfig, logger, callbac
         logger=logger,
         callbacks=callbacks,
     )
+
+
+def configure_cuda_process(train_conf: DictConfig):
+    import torch
+
+    if train_conf.trainer.matmul_precision:
+        torch.set_float32_matmul_precision(train_conf.trainer.matmul_precision)
+    if torch.cuda.is_available() and "LOCAL_RANK" in os.environ:
+        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+
+
+def patch_torch_load_map_location_cpu():
+    import torch
+
+    original_torch_load = torch.load
+
+    def torch_load_cpu(*load_args, **load_kwargs):
+        load_kwargs.setdefault("map_location", "cpu")
+        return original_torch_load(*load_args, **load_kwargs)
+
+    torch.load = torch_load_cpu
 
 
 def load_matching_checkpoint(model, ckpt_path: str | Path, strict: bool = False):
