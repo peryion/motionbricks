@@ -1,7 +1,7 @@
 result_dir: ./out
 dataset: datasets/seed_g1_motion_features/train.pt
-max_steps: 100000
-batch_size: 32
+max_steps: 50000
+batch_size: 256
 num_workers: 8
 min_tokens: 4
 max_tokens: 16
@@ -11,7 +11,7 @@ log_dir: out/training_logs
 run_name: seed-g1-pose-short
 
 trainer:
-  devices: 1
+  devices: 8
   num_nodes: 1
   accelerator: auto
   strategy: auto
