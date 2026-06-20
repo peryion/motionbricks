@@ -1,0 +1,123 @@
+assets:
+  # MuJoCo scene used for visualization and FK/IK. This XML contains the paddle
+  # and table-tennis command marker mocap bodies.
+  humanoid_xml: assets/skeletons/g1/g1_29dof_tt.xml
+  # Skeleton XML used by MotionBricks' qpos <-> motion transform converter.
+  skeleton_xml: assets/skeletons/g1/g1.xml
+  result_dir: out
+  data_root: datasets
+  explicit_dataset_folder: datasets/motionbricks-G1
+  default_qpos: [0.0, 0.0, 0.76, 1.0, 0.0, 0.0, 0.0, 
+    -0.312, 0.0, 0.0, 0.669, -0.363, 0.0, 
+    -0.312, 0.0, 0.0, 0.669, -0.363, 0.0, 
+    0.0, 0.0, 0.0, 
+    0.2, 0.2, 0.0, -0.4, 0.0, 0.0, 0.0, 
+    0.2, -0.2, 0.0, -0.4, 0.0, 0.0, 0.0]
+
+model:
+  # Leave null to use the default MotionBricks checkpoints from the planner config.
+  # root_ckpt: null
+  # root_config: null
+  # pose_ckpt: null
+  # pose_config: null
+  root_ckpt: /home/zhipy/project/GR00T-WholeBodyControl/motionbricks/out/training_logs/seed-g1-root-short-20260603-082513/checkpoints/step=200000.ckpt
+  root_config: /home/zhipy/project/GR00T-WholeBodyControl/motionbricks/out/training_logs/seed-g1-root-short-20260603-082513/config.yaml
+  pose_ckpt: /home/zhipy/project/GR00T-WholeBodyControl/motionbricks/out/training_logs/seed-g1-pose-short-20260530-142859/checkpoints/step=100000.ckpt
+  pose_config: /home/zhipy/project/GR00T-WholeBodyControl/motionbricks/out/training_logs/seed-g1-pose-short-20260530-142859/config.yaml
+  planner: default
+  # If null, the shortest root/pose-compatible token count is used.
+  pred_num_tokens: 5
+
+runtime:
+  max_steps: 10000
+  # MotionBricks generation interval multiplier.
+  generate_dt: 2.0
+  pre_filter_qpos: 1
+  source_root_realignment: 1
+  target_root_realignment: 1
+  force_canonicalization: 1
+  skip_ending_target_cond: 0
+
+controller:
+  # World heading target in MuJoCo coordinates. 0 means facing +x.
+  target_heading: 0.0
+  # Four IK target frames, measured in 30Hz frames relative to impact.
+  # The default places impact halfway between frames 1 and 2.
+  target_frame_offsets: [-1., -0.0, 1.0, 2.0]
+  # Which of the four IK frames are exposed as pose target conditions.
+  target_pose_mask: [true, true, true, False]
+  # If true, the generated root trajectory also tracks IK root target frames.
+  # Default false because root constraints can cause drift; the RL reference
+  # motion use case can enable this after tuning.
+  constrain_target_root: true
+
+ik:
+  iterations: 80
+  damping: 0.001
+  racket_site_name: paddle_center
+  # Weight for aligning the paddle local y-axis with the outgoing ball velocity.
+  # Backhand uses the opposite face, so the target axis is flipped in code.
+  orientation_weight: 0.45
+  # Reject and resample commands whose conditioned IK frames still have a large
+  # paddle-face error. This catches edge cases where IK reaches the hit point
+  # with the wrong side of the racket.
+  max_axis_error_deg: 35.0
+  resample_attempts: 8
+  # Prevent the root from standing too close to the table. Set to a large value
+  # to effectively disable.
+  max_root_x: 0.10
+  # Limit body turning during IK. Waist roll/pitch are not used by the IK.
+  max_root_yaw_delta: 0.3
+  max_waist_yaw: 0.3
+  # For backhand samples, reject IK roots that stand too far to the left
+  # (world y+) of the hit point. This prevents twisted backhand solves caused by
+  # over-moving the base instead of using a natural arm pose.
+  max_backhand_root_left_distance_m: 0.45
+
+command:
+  # Match tracking_pingpong_env_cfg_FB.py's PingPongCommandCfg defaults so the
+  # generated reference distribution follows the same command schedule used by
+  # RL training.
+  # In the FK MotionBricks generator, hit_time_s is derived from pred_num_tokens:
+  # (tokens * 4 - 4 - max(target_frame_offsets)) / 30.
+  next_resample_time_range_s: [1.0, 1.5]
+  fixed_next_resample_time_s: null
+  long_pause_prob: 0.2
+  long_next_resample_time_range_s: [3.0, 6.0]
+  hit_plane_x: 0.3
+  hit_z_range: [0.66, 1.26]
+  hit_vel_x_range: [1.3, 2.0]
+  hit_vel_y_range: [-0.3, 0.3]
+  hit_vel_z_range: [0.0, 0.4]
+  root_target_x: 0.0
+  forehand_hit_y_range: [-0.8, 0.8]
+  backhand_hit_y_range: [-0.8, 0.8]
+  mixed_forehand_min_offset_y: null
+  mixed_backhand_max_offset_y: null
+  mixed_backhand_split_offset_y: -0.2
+  freeze_to_ready_after_hit: 1
+  freeze_to_ready_delay_after_hit_s: 0.1
+  neutralize_command_when_frozen: 1
+  min_time_to_hit_s: null
+
+visualization:
+  table_position: [1.87, 0.0, 0.74]
+  table_yaw: 0.0
+  velocity_marker_scale: 0.25
+
+reference_buffer:
+  # Producer writes tmp files under pending/ and atomically renames valid clips
+  # into ready/. The RL motion loader should point to the ready/ directory.
+  output_dir: out/reference_buffer/pingpong_fk
+  output_fps: 50
+  num_clips: 2048
+  episode_duration_s: 10.0
+  continuous: 0
+  max_ready_files: 2048
+  seed: null
+  quality_filter:
+    enabled: true
+    max_joint_jump_rad: 0.3
+    max_joint_vel_rad_s: 15.0
+    max_body_lin_speed_m_s: 8.0
+    max_body_ang_speed_rad_s: 15.0
