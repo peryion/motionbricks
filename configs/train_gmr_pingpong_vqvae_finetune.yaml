@@ -1,0 +1,63 @@
+result_dir: ./out
+
+seed_dataset: datasets/seed_g1_motion_features/train.pt
+pingpong_dataset: datasets/gmr_pingpong_g1_motion_features/train_tt.pt
+
+# Pingpong only has about 0.12% of the SEED frames, so oversample it in batches.
+pingpong_batch_ratio: 0.5
+samples_per_epoch: 200000
+
+max_steps: 50000
+batch_size: 128
+num_workers: 8
+min_tokens: 6
+max_tokens: 16
+seed: 42
+
+# Original VQ-VAE used lr=2e-4. Fine-tuning should be much gentler.
+lr: 2.0e-5
+final_lr: 4.0e-7
+warmup_steps: 1000
+
+log_dir: out/training_logs
+run_name: gmr-pingpong-vqvae-ft
+
+trainer:
+  devices: 8
+  num_nodes: 1
+  accelerator: auto
+  strategy: auto
+  matmul_precision: high
+  enable_progress_bar: true
+  log_every_n_steps: 50
+  val_check_interval: 1.0
+  check_val_every_n_epoch: 1
+  limit_val_batches: 0.0
+  num_sanity_val_steps: 0
+
+wandb:
+  enabled: true
+  project: motionbricks
+  entity: null
+  offline: false
+  tags:
+    - vqvae
+    - pingpong
+    - finetune
+
+checkpoint:
+  enabled: true
+  filename: "{step}"
+  every_n_train_steps: 5000
+  save_last: true
+  save_top_k: -1
+  save_weights_only: false
+
+learning_rate_monitor:
+  enabled: true
+  logging_interval: step
+
+init_from_checkpoint:
+  enabled: true
+  path: out/motionbricks_vqvae/version_1/checkpoints/model-step=2000000.ckpt
+  strict: false
