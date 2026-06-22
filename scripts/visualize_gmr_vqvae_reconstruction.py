@@ -21,7 +21,7 @@ for p in (ROOT, ROOT / "scripts"):
         sys.path.insert(0, str(p))
 
 from evaluate_pingpong_vqvae_reconstruction import (  # noqa: E402
-    _load_pose_model,
+    _load_pose_net_from_cfg_or_vqvae,
     _qpos_to_motion_features,
     _reconstruct_with_pose_vqvae,
     _resolve_path,
@@ -44,9 +44,14 @@ def _load_gmr_qpos(path: Path, max_frames: int | None = None) -> tuple[np.ndarra
     return qpos.astype(np.float32), float(data.get("fps", 120.0))
 
 
-def _reconstruct_qpos(qpos: np.ndarray, cfg, device: str) -> np.ndarray:
-    pose_model = _load_pose_model(cfg).to(device)
-    pose_net = pose_model.supporting_nets["pose_net"].eval().to(device)
+def _reconstruct_qpos(
+    qpos: np.ndarray,
+    cfg,
+    device: str,
+    vqvae_config: str | None = None,
+    vqvae_ckpt: str | None = None,
+) -> np.ndarray:
+    pose_net = _load_pose_net_from_cfg_or_vqvae(cfg, vqvae_config, vqvae_ckpt).to(device)
     motion_rep = pose_net.motion_rep.to(device)
     converter = get_mujoco_converter(motion_rep, _resolve_path(cfg.assets.skeleton_xml)).to(device)
 
@@ -84,12 +89,17 @@ def main() -> None:
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--offset_y", type=float, default=1.2)
     parser.add_argument("--no_viewer", action="store_true")
+    parser.add_argument("--vqvae_ckpt", default=None, help="Direct fine-tuned VQ-VAE Lightning checkpoint.")
+    parser.add_argument("--vqvae_config", default=None, help="Config saved next to the fine-tuned VQ-VAE checkpoint.")
     args = parser.parse_args()
 
     cfg = OmegaConf.load(args.config)
     humanoid_xml = args.humanoid_xml or _resolve_path(cfg.assets.humanoid_xml)
     qpos, fps = _load_gmr_qpos(Path(args.pkl), args.max_frames)
-    recon_qpos = _reconstruct_qpos(qpos, cfg, args.device)
+    recon_qpos = _reconstruct_qpos(qpos, cfg, args.device, args.vqvae_config, args.vqvae_ckpt)
+    num_frames = min(qpos.shape[0], recon_qpos.shape[0])
+    qpos = qpos[:num_frames]
+    recon_qpos = recon_qpos[:num_frames]
 
     joint_err = np.abs(qpos[:, 7:36] - recon_qpos[:, 7:36])
     root_err = np.linalg.norm(qpos[:, :3] - recon_qpos[:, :3], axis=-1)

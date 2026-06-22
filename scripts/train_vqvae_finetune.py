@@ -80,7 +80,19 @@ def _make_mixed_dataset(train_conf: DictConfig, min_frames: int):
 
     num_samples = int(train_conf.get("samples_per_epoch", len(dataset)))
     sampler = WeightedRandomSampler(weights, num_samples=num_samples, replacement=True)
-    return dataset, sampler, len(seed_dataset), len(pingpong_dataset)
+    return dataset, sampler, {
+        "mode": "mixed",
+        "seed_samples": len(seed_dataset),
+        "pingpong_samples": len(pingpong_dataset),
+        "pingpong_batch_ratio": pingpong_ratio,
+    }
+
+
+def _make_dataset(train_conf: DictConfig, min_frames: int):
+    if train_conf.get("dataset"):
+        dataset = MotionFeatureDataset(train_conf.dataset, min_frames=min_frames)
+        return dataset, None, {"mode": "single", "samples": len(dataset)}
+    return _make_mixed_dataset(train_conf, min_frames)
 
 
 def main():
@@ -107,6 +119,7 @@ def main():
 
     cli_overrides = {
         "result_dir": args.result_dir,
+        "dataset": None,
         "max_steps": args.max_steps,
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
@@ -143,12 +156,12 @@ def main():
 
     motion_rep = load_motion_rep(conf)
     min_frames = conf.model.args.min_tokens * (2 ** conf.model.args.down_t) + 1
-    dataset, sampler, seed_len, pingpong_len = _make_mixed_dataset(train_conf, min_frames)
+    dataset, sampler, dataset_info = _make_dataset(train_conf, min_frames)
     dataloader = DataLoader(
         dataset,
         batch_size=train_conf.batch_size,
         sampler=sampler,
-        shuffle=False,
+        shuffle=sampler is None,
         num_workers=train_conf.num_workers,
         collate_fn=collate_batch,
         persistent_workers=train_conf.num_workers > 0,
@@ -184,9 +197,7 @@ def main():
     print(f"Starting VQ-VAE fine-tuning for {train_conf.max_steps} steps...")
     print(f"  Run dir: {run_dir}")
     print(f"  Init checkpoint: {Path(init_ckpt)}")
-    print(f"  SEED samples: {seed_len}")
-    print(f"  Pingpong samples: {pingpong_len}")
-    print(f"  Pingpong batch ratio: {float(train_conf.pingpong_batch_ratio):.2f}")
+    print(f"  Dataset info: {dataset_info}")
     print(f"  Batch size: {train_conf.batch_size}")
     print(f"  LR: {conf.model.optimizer.lr}")
     trainer.fit(model, train_dataloaders=dataloader)

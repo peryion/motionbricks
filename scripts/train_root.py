@@ -22,7 +22,6 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.utils.data import DataLoader
 
 from motionbricks.data.synthetic_dataset import SyntheticMotionDataset, collate_batch
-from motionbricks.data.motion_feature_dataset import MotionFeatureDataset
 from motionbricks.helper.pl_util import load_motion_rep
 from train_common import (
     configure_cuda_process,
@@ -31,6 +30,7 @@ from train_common import (
     make_loggers_and_callbacks,
     make_trainer,
 )
+from train_dataset_utils import make_motion_feature_dataset_and_sampler
 
 
 def load_config(result_dir: str, train_conf: DictConfig):
@@ -58,6 +58,12 @@ def load_config(result_dir: str, train_conf: DictConfig):
 
         # resolve ${trainer.max_steps} in scheduler
         conf.model.scheduler.num_training_steps = train_conf.max_steps
+        if "lr" in train_conf and train_conf.lr is not None:
+            conf.model.optimizer.lr = train_conf.lr
+        if "final_lr" in train_conf and train_conf.final_lr is not None:
+            conf.model.scheduler.final_lr = train_conf.final_lr
+        if "warmup_steps" in train_conf and train_conf.warmup_steps is not None:
+            conf.model.scheduler.num_warmup_steps = train_conf.warmup_steps
         if train_conf.min_tokens is not None:
             conf.model.args.min_tokens = train_conf.min_tokens
         if train_conf.max_tokens is not None:
@@ -135,6 +141,8 @@ def main():
         train_conf.wandb.offline = bool(args.wandb_offline)
     if args.checkpoint_every is not None:
         train_conf.checkpoint.every_n_train_steps = args.checkpoint_every
+    if not train_conf.wandb.enabled:
+        train_conf.learning_rate_monitor.enabled = False
 
     configure_cuda_process(train_conf)
     pl.seed_everything(train_conf.seed)
@@ -144,9 +152,9 @@ def main():
     motion_rep = load_motion_rep(conf)
     feat_dim = len(motion_rep.indices['all'])
 
-    if train_conf.dataset:
+    if train_conf.dataset or (train_conf.get("seed_dataset") and train_conf.get("pingpong_dataset")):
         min_frames = conf.model.args.min_tokens * (2 ** conf.model.args.down_t) + 1
-        dataset = MotionFeatureDataset(train_conf.dataset, min_frames=min_frames)
+        dataset, sampler, dataset_info = make_motion_feature_dataset_and_sampler(train_conf, min_frames)
     else:
         dataset = SyntheticMotionDataset(
             feat_dim=feat_dim,
@@ -154,10 +162,13 @@ def main():
             min_frames=200,
             max_frames=400,
         )
+        sampler = None
+        dataset_info = {"mode": "synthetic", "samples": len(dataset)}
     dataloader = DataLoader(
         dataset,
         batch_size=train_conf.batch_size,
-        shuffle=True,
+        shuffle=sampler is None,
+        sampler=sampler,
         num_workers=train_conf.num_workers,
         collate_fn=collate_batch,
         persistent_workers=train_conf.num_workers > 0,
@@ -202,6 +213,7 @@ def main():
     print(f"  Feature dim: {feat_dim}")
     print(f"  Batch size: {train_conf.batch_size}")
     print(f"  Dataset size: {len(dataset)}")
+    print(f"  Dataset info: {dataset_info}")
     trainer.fit(model, train_dataloaders=dataloader)
     print("Training complete.")
 
